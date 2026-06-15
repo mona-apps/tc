@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Time Tracker</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  
+  <script type="importmap">
+    {
+      "imports": {
+        "@hotwired/turbo": "https://esm.sh/@hotwired/turbo@8.0.12",
+        "@hotwired/stimulus": "https://esm.sh/@hotwired/stimulus@3.2.2"
+      }
+    }
+  </script>
+</head>
+<body class="bg-gray-100 min-h-screen selection:bg-blue-200 antialiased overflow-x-hidden">
+
+  <div class="max-w-2xl mx-auto p-4 sm:p-6 bg-white rounded-lg shadow-md mt-4 sm:mt-10" data-controller="time-tracker">
+    
+    <div class="mb-6">
+      <input
+        type="text"
+        placeholder="What are you working on?"
+        list="task-suggestions"
+        data-time-tracker-target="input"
+        class="w-full px-4 py-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 text-gray-800"
+      />
+      <datalist id="task-suggestions" data-time-tracker-target="datalist"></datalist>
+    </div>
+
+    <div class="flex flex-col items-center mb-8">
+      <div class="text-5xl font-mono mb-4 text-gray-800 select-none" data-time-tracker-target="display">
+        00:00:00
+      </div>
+      <button
+        data-action="click->time-tracker#toggle"
+        data-time-tracker-target="button"
+        class="flex items-center justify-center w-24 h-24 rounded-full text-white font-semibold transition-colors duration-200 bg-green-500 hover:bg-green-600 cursor-pointer shadow-sm text-lg select-none touch-manipulation"
+      >
+        Start
+      </button>
+    </div>
+
+    <div class="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+      <table class="w-full text-left border-collapse select-none table-fixed sm:table-auto">
+        <thead>
+          <tr class="border-b-2 border-gray-200 bg-gray-50">
+            <th class="p-3 text-sm font-semibold text-gray-600 w-14 text-center">Move</th>
+            <th class="p-3 text-sm font-semibold text-gray-600">Task</th>
+            <th class="p-3 text-sm font-semibold text-gray-600 w-24 hidden sm:table-cell">Date</th>
+            <th class="p-3 text-sm font-semibold text-gray-600 w-36 sm:w-44">Duration (↔)</th>
+            <th class="p-3 text-sm font-semibold text-gray-600 w-16 sm:w-20"></th>
+          </tr>
+        </thead>
+        <tbody data-time-tracker-target="tableBody" class="relative"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script type="module">
+    import "@hotwired/turbo"
+    import { Application, Controller } from "@hotwired/stimulus"
+
+    const application = Application.start()
+
+    application.register("time-tracker", class extends Controller {
+      static targets = ["input", "display", "button", "tableBody", "datalist"]
+
+      connect() {
+        this.isTracking = false
+        this.seconds = 0
+        this.timer = null
+        this.storageKey = "time_tracker_records"
+        
+        this.activeSortId = null
+        this.sortRowEl = null
+        this.sortStartY = 0
+        this.sortRowIndex = -1
+        this.rowPositions = []
+
+        this.activeDurationId = null
+        this.durationStartX = 0
+        this.durationStartValue = 0
+
+        this.renderRecords()
+      }
+
+      disconnect() {
+        this.stopTimerInterval()
+      }
+
+      toggle() {
+        if (this.isTracking) {
+          this.stop()
+        } else {
+          this.start()
+        }
+      }
+
+      start() {
+        this.isTracking = true
+        this.inputTarget.disabled = true
+        
+        this.buttonTarget.textContent = "Stop"
+        this.buttonTarget.classList.remove("bg-green-500", "hover:bg-green-600")
+        this.buttonTarget.classList.add("bg-red-500", "hover:bg-red-600")
+
+        this.timer = setInterval(() => {
+          this.seconds++
+          this.displayTarget.textContent = this.formatTime(this.seconds)
+        }, 1000)
+      }
+
+      stop() {
+        this.stopTimerInterval()
+        this.isTracking = false
+        
+        const taskName = this.inputTarget.value.trim() || "Untitled Task"
+        
+        this.saveRecord(taskName, this.seconds)
+        this.resetUI()
+        this.renderRecords()
+      }
+
+      stopTimerInterval() {
+        if (this.timer) {
+          clearInterval(this.timer)
+          this.timer = null
+        }
+      }
+
+      resetUI() {
+        this.seconds = 0
+        this.displayTarget.textContent = "00:00:00"
+        this.inputTarget.value = ""
+        this.inputTarget.disabled = false
+
+        this.buttonTarget.textContent = "Start"
+        this.buttonTarget.classList.remove("bg-red-500", "hover:bg-red-600")
+        this.buttonTarget.classList.add("bg-green-500", "hover:bg-green-600")
+      }
+
+      getRecords() {
+        const data = localStorage.getItem(this.storageKey)
+        return data ? JSON.parse(data) : []
+      }
+
+      saveRecord(name, duration) {
+        const records = this.getRecords()
+        const newRecord = {
+          id: Date.now(),
+          name: name,
+          duration: duration,
+          date: new Date().toLocaleDateString()
+        }
+        records.unshift(newRecord)
+        localStorage.setItem(this.storageKey, JSON.stringify(records))
+      }
+
+      deleteRecord(event) {
+        const id = parseInt(event.currentTarget.dataset.id)
+        const records = this.getRecords().filter(record => record.id !== id)
+        localStorage.setItem(this.storageKey, JSON.stringify(records))
+        this.renderRecords()
+      }
+
+      onSortPointerDown(event) {
+        const handle = event.currentTarget
+        this.activeSortId = parseInt(handle.dataset.id)
+        this.sortRowEl = handle.closest("tr")
+        this.sortStartY = event.clientY
+        
+        handle.setPointerCapture(event.pointerId)
+        
+        const records = this.getRecords()
+        this.sortRowIndex = records.findIndex(r => r.id === this.activeSortId)
+
+        const rows = Array.from(this.tableBodyTarget.querySelectorAll("tr:not(.bg-gray-100)"))
+        this.rowPositions = rows.map((row, idx) => {
+          const rect = row.getBoundingClientRect()
+          return { id: parseInt(row.dataset.id), index: idx, midY: rect.top + window.scrollY + (rect.height / 2) }
+        })
+
+        this.sortRowEl.classList.add("bg-blue-50", "opacity-70", "z-10")
+        
+        this.pointerMoveBound = this.onSortPointerMove.bind(this)
+        this.pointerUpBound = this.onSortPointerUp.bind(this)
+        
+        handle.addEventListener("pointermove", this.pointerMoveBound)
+        handle.addEventListener("pointerup", this.pointerUpBound)
+      }
+
+      onSortPointerMove(event) {
+        if (!this.activeSortId) return
+        
+        const match = this.rowPositions.find(pos => {
+          if (pos.id === this.activeSortId) return false
+          const rowRect = this.tableBodyTarget.querySelector(`[data-id="${pos.id}"]`).getBoundingClientRect()
+          const absoluteTop = rowRect.top + window.scrollY
+          const absoluteBottom = rowRect.bottom + window.scrollY
+          return event.clientY + window.scrollY >= absoluteTop && event.clientY + window.scrollY <= absoluteBottom
+        })
+
+        if (match && match.index !== this.sortRowIndex) {
+          const records = this.getRecords()
+          const currentItem = records[this.sortRowIndex]
+          
+          records.splice(this.sortRowIndex, 1)
+          records.splice(match.index, 0, currentItem)
+          localStorage.setItem(this.storageKey, JSON.stringify(records))
+          
+          this.sortRowIndex = match.index
+          this.renderRecords({ preserveSortingStyles: true })
+        }
+      }
+
+      onSortPointerUp(event) {
+        const handle = event.currentTarget
+        handle.releasePointerCapture(event.pointerId)
+        
+        handle.removeEventListener("pointermove", this.pointerMoveBound)
+        handle.removeEventListener("pointerup", this.pointerUpBound)
+        
+        this.activeSortId = null
+        this.sortRowEl = null
+        this.renderRecords()
+      }
+
+      onDurationPointerDown(event) {
+        const cell = event.currentTarget
+        this.activeDurationId = parseInt(cell.dataset.id)
+        this.durationStartX = event.clientX
+        
+        const records = this.getRecords()
+        const record = records.find(r => r.id === this.activeDurationId)
+        if (!record) return
+        
+        this.durationStartValue = record.duration
+        cell.setPointerCapture(event.pointerId)
+        cell.classList.add("bg-blue-50")
+
+        this.durMoveBound = this.onDurationPointerMove.bind(this)
+        this.durUpBound = this.onDurationPointerUp.bind(this)
+
+        cell.addEventListener("pointermove", this.durMoveBound)
+        cell.addEventListener("pointerup", this.durUpBound)
+        document.body.classList.add("cursor-ew-resize")
+      }
+
+      onDurationPointerMove(event) {
+        if (!this.activeDurationId) return
+        const deltaX = event.clientX - this.durationStartX
+        
+        const deltaSeconds = Math.round(deltaX * 5)
+        const newDuration = Math.max(0, this.durationStartValue + deltaSeconds)
+
+        const records = this.getRecords()
+        const record = records.find(r => r.id === this.activeDurationId)
+        if (record) {
+          record.duration = newDuration
+          localStorage.setItem(this.storageKey, JSON.stringify(records))
+          
+          const cell = this.tableBodyTarget.querySelector(`[data-duration-cell-id="${this.activeDurationId}"]`)
+          if (cell) cell.textContent = this.formatTime(newDuration)
+          
+          this.updateTotalRow(records)
+        }
+      }
+
+      onDurationPointerUp(event) {
+        const cell = event.currentTarget
+        cell.releasePointerCapture(event.pointerId)
+        cell.classList.remove("bg-blue-50")
+        
+        cell.removeEventListener("pointermove", this.durMoveBound)
+        cell.removeEventListener("pointerup", this.durUpBound)
+        document.body.classList.remove("cursor-ew-resize")
+        
+        this.activeDurationId = null
+        this.renderRecords()
+      }
+
+      updateTotalRow(records) {
+        const totalDuration = records.reduce((sum, record) => sum + record.duration, 0)
+        const totalCell = this.tableBodyTarget.querySelector("[data-total-duration-cell]")
+        if (totalCell) totalCell.textContent = this.formatTime(totalDuration)
+      }
+
+      updateAutocompleteOptions(records) {
+        const uniqueNames = [...new Set(records.map(r => r.name))].filter(Boolean)
+        this.datalistTarget.innerHTML = uniqueNames.map(name => `
+          <option value="${this.escapeHTML(name)}">
+        `).join('')
+      }
+
+      renderRecords(options = {}) {
+        const records = this.getRecords()
+        this.updateAutocompleteOptions(records)
+        
+        if (records.length === 0) {
+          this.tableBodyTarget.innerHTML = `
+            <tr id="no-records">
+              <td colSpan="5" class="p-4 text-center text-gray-400 italic">No time logs yet</td>
+            </tr>
+          `
+          return
+        }
+
+        const totalDuration = records.reduce((sum, record) => sum + record.duration, 0)
+
+        let html = records.map((record) => {
+          const isSortingActiveRow = options.preserveSortingStyles && record.id === this.activeSortId
+          const rowStyleClass = isSortingActiveRow ? "bg-blue-50 opacity-70" : "hover:bg-gray-50 border-b border-gray-100"
+          
+          return `
+            <tr class="${rowStyleClass} transition-colors touch-none" data-id="${record.id}">
+              <td class="p-3 text-center">
+                <div 
+                  data-action="pointerdown->time-tracker#onSortPointerDown"
+                  data-id="${record.id}"
+                  class="cursor-row-resize text-gray-400 hover:text-gray-600 inline-block px-3 py-1 select-none text-xl touch-none"
+                >
+                  ☰
+                </div>
+              </td>
+              <td class="p-3 text-gray-800 font-medium truncate">${this.escapeHTML(record.name)}</td>
+              <td class="p-3 text-gray-500 text-sm hidden sm:table-cell">${record.date}</td>
+              <td 
+                class="p-3 text-gray-700 font-mono cursor-ew-resize hover:bg-gray-100 rounded select-none touch-none"
+                data-action="pointerdown->time-tracker#onDurationPointerDown"
+                data-id="${record.id}"
+                data-duration-cell-id="${record.id}"
+                title="Drag or slide horizontally to change time"
+              >
+                ${this.formatTime(record.duration)}
+              </td>
+              <td class="p-3 text-right">
+                <button 
+                  data-action="click->time-tracker#deleteRecord" 
+                  data-id="${record.id}" 
+                  class="text-red-500 hover:text-red-700 transition-colors text-sm font-medium cursor-pointer p-1"
+                >
+                  Delete
+                </button>
+              </td>
+            </tr>
+          `
+        }).join('')
+
+        html += `
+          <tr class="bg-gray-100 font-semibold border-t-2 border-gray-300">
+            <td class="p-3"></td>
+            <td class="p-3 text-gray-700">Total</td>
+            <td class="p-3 hidden sm:table-cell"></td>
+            <td class="p-3 text-gray-900 font-mono" data-total-duration-cell>${this.formatTime(totalDuration)}</td>
+            <td class="p-3"></td>
+          </tr>
+        `
+
+        this.tableBodyTarget.innerHTML = html
+      }
+
+      formatTime(seconds) {
+        const hrs = Math.floor(seconds / 3600)
+        const mins = Math.floor((seconds % 3600) / 60)
+        const secs = seconds % 60
+        return [
+          hrs.toString().padStart(2, '0'),
+          mins.toString().padStart(2, '0'),
+          secs.toString().padStart(2, '0')
+        ].join(':')
+      }
+
+      escapeHTML(str) {
+        return str.replace(/[&<>'"]/g, 
+          tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
+        )
+      }
+    })
+  </script>
+</body>
+</html>
